@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
@@ -10,7 +9,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -73,13 +71,18 @@ func handleCheckoutInsert(env Env) http.HandlerFunc {
 
 		// Decode the request body into a Request struct
 		var req Request
-		var buf bytes.Buffer
-		tee := io.TeeReader(r.Body, &buf)
-		err := json.NewDecoder(tee).Decode(&req)
+		values := r.PostForm
 
+		jsonData, err := json.Marshal(values)
+		if err != nil {
+			log.Println("json.Marshal: ", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
+		err = json.Unmarshal(jsonData, &req)
 		if err != nil {
 			log.Println("Decode: ", err)
-			log.Println(buf.String())
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
