@@ -38,25 +38,25 @@ type Response struct {
 	Signature string `json:"signature"`
 }
 
-// ReadEnv is a function that reads env.json and returns an Env struct
-func ReadEnv() Env {
+// readEnv is a function that reads env.json and returns an Env struct
+func readEnv() (Env, error) {
+	// Declare an Env variable
+	var env Env
+
 	// Read the file content
 	content, err := os.ReadFile("env.json")
 	if err != nil {
-		log.Fatal("Error when opening file: ", err)
+		return env, fmt.Errorf("Error when opening file: %s", err.Error())
 	}
-
-	// Declare an Env variable
-	var env Env
 
 	// Unmarshal the JSON data into the Env variable
 	err = json.Unmarshal(content, &env)
 	if err != nil {
-		log.Fatal("Error during Unmarshal(): ", err)
+		return env, fmt.Errorf("Error during Unmarshal(): %s", err.Error())
 	}
 
 	// Return the Env variable
-	return env
+	return env, nil
 }
 
 // handleCheckoutInsert is the handler for the "/checkout/insert" endpoint
@@ -112,7 +112,10 @@ func handleCheckoutInsert(env Env) http.HandlerFunc {
 func main() {
 
 	// Read the Envs
-	env := ReadEnv()
+	env, err := readEnv()
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// Create a new mux router and register the handler for "/checkout/insert" endpoint
 	mux := http.NewServeMux()
