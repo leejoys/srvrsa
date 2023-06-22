@@ -5,14 +5,23 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 )
+
+// Env is a struct that holds the fields from env.json
+type Env struct {
+	PrivateKey      string `json:"private_key"`
+	PublicKey       string `json:"public_key"`
+	ClientPublicKey string `json:"client_public_key"`
+}
 
 // Request is the struct for the POST request body
 type Request struct {
@@ -29,54 +38,85 @@ type Response struct {
 	Signature string `json:"signature"`
 }
 
+// ReadEnv is a function that reads env.json and returns an Env struct
+func ReadEnv() Env {
+	// Read the file content
+	content, err := os.ReadFile("env.json")
+	if err != nil {
+		log.Fatal("Error when opening file: ", err)
+	}
+
+	// Declare an Env variable
+	var env Env
+
+	// Unmarshal the JSON data into the Env variable
+	err = json.Unmarshal(content, &env)
+	if err != nil {
+		log.Fatal("Error during Unmarshal(): ", err)
+	}
+
+	// Return the Env variable
+	return env
+}
+
 // handleCheckoutInsert is the handler for the "/checkout/insert" endpoint
-func handleCheckoutInsert(w http.ResponseWriter, r *http.Request) {
-	// Check if the request method is POST
-	if r.Method != http.MethodPost {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
+func handleCheckoutInsert(env Env) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Check if the request method is POST
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
 
-	// Decode the request body into a Request struct
-	var req Request
-	err := json.NewDecoder(r.Body).Decode(&req)
-	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
+		// Decode the request body into a Request struct
+		var req Request
+		err := json.NewDecoder(r.Body).Decode(&req)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 
-	// Verify the signature of the request
-	if !verifySignature(req) {
-		w.WriteHeader(http.StatusUnauthorized)
-		return
-	}
+		// Verify the signature of the request
+		if !verifySignature(req, env) {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
 
-	// Process the text by converting it to upper case
-	processed := strings.ToUpper(req.Text)
+		// Process the text by converting it to upper case
+		processed := strings.ToUpper(req.Text)
 
-	// Create a Response struct with the processed text, code and reason
-	resp := Response{
-		Processed: processed,
-		Code:      http.StatusOK,
-		Reason:    "success",
-	}
+		// Create a Response struct with the processed text, code and reason
+		resp := Response{
+			Processed: processed,
+			Code:      http.StatusOK,
+			Reason:    "success",
+		}
 
-	// Sign the response with a signature
-	resp = signResponse(resp)
+		// Sign the response with a signature
+		resp, err = signResponse(resp, env)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 
-	// Encode the Response struct into JSON and write it to the response writer
-	w.Header().Set("Content-Type", "application/json")
-	err = json.NewEncoder(w).Encode(resp)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		return
+		// Encode the Response struct into JSON and write it to the response writer
+		w.Header().Set("Content-Type", "application/json")
+		err = json.NewEncoder(w).Encode(resp)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 	}
 }
 
 func main() {
+
+	// Read the Envs
+	env := ReadEnv()
+
 	// Create a new mux router and register the handler for "/checkout/insert" endpoint
 	mux := http.NewServeMux()
-	mux.HandleFunc("/checkout/insert", handleCheckoutInsert)
+	mux.HandleFunc("/checkout/insert", handleCheckoutInsert(env))
 
 	// Start listening on port 3828 and log any errors
 	fmt.Println("Listening on port 3828")
@@ -84,15 +124,20 @@ func main() {
 }
 
 // verifySignature is a function that verifies the signature of a request
-func verifySignature(req Request) bool {
+func verifySignature(req Request, env Env) bool {
 	// Decode the signature from base64 to bytes
 	signature, err := base64.StdEncoding.DecodeString(req.Signature)
 	if err != nil {
 		return false
 	}
 
-	// Get the public key of the client (for example, from a file or a database)
-	publicKey, err := getPublicKey(req.ID)
+	// // Get the public key of the client (for example, from a file or a database)
+	// publicKey, err := getPublicKey(req.ID)
+	// if err != nil {
+	// 	return false
+	// }
+
+	publicKey, err := getClientPublicKey(env)
 	if err != nil {
 		return false
 	}
@@ -111,21 +156,26 @@ func verifySignature(req Request) bool {
 }
 
 // signResponse is a function that signs the response with a signature
-func signResponse(resp Response) Response {
+func signResponse(resp Response, env Env) (Response, error) {
 	// Create a hash from the processed, code and reason fields of the response
 	hashed := createHash(resp.Processed + ":" + strconv.Itoa(resp.Code) + ":" + resp.Reason + ";")
+
+	privateKey, err := getPrivateKey(env)
+	if err != nil {
+		return resp, err
+	}
 
 	// Sign the hash using our private key and the SHA256 algorithm
 	signature, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, hashed[:])
 	if err != nil {
-		return resp
+		return resp, err
 	}
 
 	// Encode the signature in base64 and add it to the signature field of the response
 	resp.Signature = base64.StdEncoding.EncodeToString(signature)
 
 	// Return the signed response
-	return resp
+	return resp, nil
 }
 
 // createHash is a helper function that creates a hash from a string using SHA256 algorithm
@@ -137,4 +187,46 @@ func createHash(s string) [32]byte {
 func getPublicKey(id string) (*rsa.PublicKey, error) {
 	// TODO: implement the logic to get the public key of a client by id
 	return nil, nil
+}
+
+// getClientPublicKey is a function that converts env.ClientPublicKey to *rsa.PublicKey
+func getClientPublicKey(env Env) (*rsa.PublicKey, error) {
+	// Decode the string env.ClientPublicKey from base64 to bytes
+	clientPublicKeyBytes, err := base64.StdEncoding.DecodeString(env.ClientPublicKey)
+	if err != nil {
+		return nil, fmt.Errorf("Error when decoding the ClientPublicKey string: %s", err.Error())
+	}
+
+	// Parse the bytes into a PKIXPublicKey structure
+	clientPublicKeyInterface, err := x509.ParsePKIXPublicKey(clientPublicKeyBytes)
+	if err != nil {
+		return nil, fmt.Errorf("Error when parsing PKIXPublicKey: %s", err.Error())
+	}
+
+	// Cast the PKIXPublicKey structure to type *rsa.PublicKey
+	clientPublicKey, ok := clientPublicKeyInterface.(*rsa.PublicKey)
+	if !ok {
+		return nil, fmt.Errorf("The ClientPublicKey key is not an RSA key")
+	}
+
+	// Return *rsa.PublicKey
+	return clientPublicKey, nil
+}
+
+// getPrivateKey is a function that converts env.PrivateKey to *rsa.PrivateKey
+func getPrivateKey(env Env) (*rsa.PrivateKey, error) {
+	// Decode the string env.PrivateKey from base64 to bytes
+	privateKeyBytes, err := base64.StdEncoding.DecodeString(env.PrivateKey)
+	if err != nil {
+		return nil, fmt.Errorf("Error when decoding the PrivateKey string: %s", err.Error())
+	}
+
+	// Parse the bytes into a *rsa.PrivateKey
+	privateKey, err := x509.ParsePKCS1PrivateKey(privateKeyBytes)
+	if err != nil {
+		return nil, fmt.Errorf("Error when parsing PKCS1PrivateKey: %s", err.Error())
+	}
+
+	// Return *rsa.PrivateKey
+	return privateKey, nil
 }
