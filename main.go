@@ -25,9 +25,9 @@ type Env struct {
 
 // Request is the struct for the POST request body
 type Request struct {
-	ID        string `json:"id"`
-	Text      string `json:"text"`
-	Signature string `json:"signature"`
+	ID        []string `json:"id"`
+	Text      []string `json:"text"`
+	Signature []string `json:"signature"`
 }
 
 // Response is the struct for the JSON response
@@ -71,7 +71,16 @@ func handleCheckoutInsert(env Env) http.HandlerFunc {
 
 		// Decode the request body into a Request struct
 		var req Request
-		values := r.PostForm
+		err := r.ParseForm()
+		if err != nil {
+			log.Println("r.ParseForm: ", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
+		values := r.Form
+
+		log.Println(values)
 
 		jsonData, err := json.Marshal(values)
 		if err != nil {
@@ -80,9 +89,21 @@ func handleCheckoutInsert(env Env) http.HandlerFunc {
 			return
 		}
 
+		log.Println(jsonData)
+
 		err = json.Unmarshal(jsonData, &req)
 		if err != nil {
 			log.Println("Decode: ", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
+		log.Println(req)
+
+		if len(req.ID) < 1 ||
+			len(req.Text) < 1 ||
+			len(req.Signature) < 1 {
+			log.Println("Bad request")
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
@@ -95,7 +116,7 @@ func handleCheckoutInsert(env Env) http.HandlerFunc {
 		}
 
 		// Process the text by converting it to upper case
-		processed := strings.ToUpper(req.Text)
+		processed := strings.ToUpper(req.Text[0])
 
 		// Create a Response struct with the processed text, code and reason
 		resp := Response{
@@ -143,8 +164,9 @@ func main() {
 // verifySignature is a function that verifies the signature of a request
 func verifySignature(req Request, env Env) bool {
 	// Decode the signature from base64 to bytes
-	signature, err := base64.StdEncoding.DecodeString(req.Signature)
+	signature, err := base64.StdEncoding.DecodeString(req.Signature[0])
 	if err != nil {
+		log.Println("DecodeString: ", err)
 		return false
 	}
 
@@ -156,15 +178,17 @@ func verifySignature(req Request, env Env) bool {
 
 	publicKey, err := getClientPublicKey(env)
 	if err != nil {
+		log.Println("getClientPublicKey: ", err)
 		return false
 	}
 
 	// Create a hash from the id and text fields of the request
-	hashed := createHash(req.ID + ":" + req.Text + ";")
+	hashed := createHash("id:" + req.ID[0] + ";text:" + req.Text[0] + ";")
 
 	// Verify the signature using the public key, the hash and the SHA256 algorithm
 	err = rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, hashed[:], signature)
 	if err != nil {
+		log.Println("VerifyPKCS1v15: ", err)
 		return false
 	}
 
@@ -175,7 +199,7 @@ func verifySignature(req Request, env Env) bool {
 // signResponse is a function that signs the response with a signature
 func signResponse(resp Response, env Env) (Response, error) {
 	// Create a hash from the processed, code and reason fields of the response
-	hashed := createHash(resp.Processed + ":" + strconv.Itoa(resp.Code) + ":" + resp.Reason + ";")
+	hashed := createHash("code:" + strconv.Itoa(resp.Code) + ";processed:" + resp.Processed + ";reason:" + resp.Reason + ";")
 
 	privateKey, err := getPrivateKey(env)
 	if err != nil {
@@ -215,15 +239,9 @@ func getClientPublicKey(env Env) (*rsa.PublicKey, error) {
 	}
 
 	// Parse the bytes into a PKIXPublicKey structure
-	clientPublicKeyInterface, err := x509.ParsePKIXPublicKey(clientPublicKeyBytes)
+	clientPublicKey, err := x509.ParsePKCS1PublicKey(clientPublicKeyBytes)
 	if err != nil {
-		return nil, fmt.Errorf("Error when parsing PKIXPublicKey: %s", err.Error())
-	}
-
-	// Cast the PKIXPublicKey structure to type *rsa.PublicKey
-	clientPublicKey, ok := clientPublicKeyInterface.(*rsa.PublicKey)
-	if !ok {
-		return nil, fmt.Errorf("The ClientPublicKey key is not an RSA key")
+		return nil, fmt.Errorf("Error when parsing PKCS1PublicKey: %s", err.Error())
 	}
 
 	// Return *rsa.PublicKey
