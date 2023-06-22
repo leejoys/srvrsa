@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
@@ -9,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -64,20 +66,27 @@ func handleCheckoutInsert(env Env) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Check if the request method is POST
 		if r.Method != http.MethodPost {
+			log.Println("!= http.MethodPost")
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
 
 		// Decode the request body into a Request struct
 		var req Request
-		err := json.NewDecoder(r.Body).Decode(&req)
+		var buf bytes.Buffer
+		tee := io.TeeReader(r.Body, &buf)
+		err := json.NewDecoder(tee).Decode(&req)
+
 		if err != nil {
+			log.Println("Decode: ", err)
+			log.Println(buf.String())
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
 
 		// Verify the signature of the request
 		if !verifySignature(req, env) {
+			log.Println("!verifySignature")
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
@@ -95,6 +104,7 @@ func handleCheckoutInsert(env Env) http.HandlerFunc {
 		// Sign the response with a signature
 		resp, err = signResponse(resp, env)
 		if err != nil {
+			log.Println("signResponse: ", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
@@ -103,6 +113,7 @@ func handleCheckoutInsert(env Env) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		err = json.NewEncoder(w).Encode(resp)
 		if err != nil {
+			log.Println("Encode: ", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
